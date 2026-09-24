@@ -80,24 +80,27 @@ export function CubismItem({
 
     if (width <= 0 || height <= 0) {
       runtime.samples = [];
+      runtime.image = null;
       runtime.revision += 1;
       publishRuntime();
       return;
     }
 
     sampleImage(src, width, height, columns).then(
-      (samples) => {
+      ({ samples, image }) => {
         if (cancelled) return;
         runtime.width = width;
         runtime.height = height;
         runtime.columns = columns;
         runtime.samples = samples;
+        runtime.image = image;
         runtime.revision += 1;
         publishRuntime();
       },
       () => {
         if (cancelled) return;
         runtime.samples = [];
+        runtime.image = null;
         runtime.revision += 1;
         publishRuntime();
       },

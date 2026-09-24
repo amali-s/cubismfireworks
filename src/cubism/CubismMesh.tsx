@@ -4,11 +4,10 @@ import * as THREE from "three";
 import { easeInCubic, smoothstep } from "./easing.ts";
 import { cameraDistance, type ItemRuntime } from "./runtime.ts";
 
-const RIPPLE_SECONDS = 0.72;
-const STAGGER = 0.64;
+const RIPPLE_SECONDS = 0.34;
+const STAGGER = 0.08;
 const SLAB = 0.045;
-const WAVE = 28;
-const CELL_INSET = 0.985;
+const WAVE = 6;
 const SHATTER_FADE_START = 0.7;
 
 type BurstSeed = {
@@ -42,13 +41,19 @@ function extrusionAt(distanceNorm: number, progress: number) {
   return smoothstep((progress - delay) / span);
 }
 
+function gapScale(cell: number) {
+  if (cell <= 1) return 1;
+  return (cell - 1) / cell;
+}
+
 function shatterOpacity(progress: number) {
   if (progress <= SHATTER_FADE_START) return 1;
   return 1 - (progress - SHATTER_FADE_START) / (1 - SHATTER_FADE_START);
 }
 
-function createCubeMaterial() {
+function createCubeMaterial(map: THREE.Texture) {
   const material = new THREE.MeshBasicMaterial({
+    map,
     transparent: true,
     opacity: 1,
     toneMapped: false,
@@ -60,8 +65,17 @@ function createCubeMaterial() {
         "#include <common>",
         `#include <common>
 attribute float instanceOpacity;
+attribute vec2 instanceUvOffset;
+attribute vec2 instanceUvScale;
 varying float vInstanceOpacity;
+varying float vIsFront;
 varying vec3 vCubeNormal;`,
+      )
+      .replace(
+        "#include <uv_vertex>",
+        `#include <uv_vertex>
+vMapUv = instanceUvOffset + uv * instanceUvScale;
+vIsFront = normal.z > 0.5 ? 1.0 : 0.0;`,
       )
       .replace(
         "#include <project_vertex>",
@@ -81,19 +95,24 @@ vCubeNormal = normalize( normalMatrix * cubeNormal );`,
         "#include <common>",
         `#include <common>
 varying float vInstanceOpacity;
+varying float vIsFront;
 varying vec3 vCubeNormal;`,
       )
+      .replace("#include <color_fragment>", "")
       .replace(
         "#include <opaque_fragment>",
         `if ( vInstanceOpacity < 0.004 ) discard;
-float shade = dot( normalize( vCubeNormal ), vec3( 0.2, 0.45, 0.87 ) );
-diffuseColor.rgb *= 0.86 + 0.14 * clamp( shade, 0.0, 1.0 );
+if ( vIsFront < 0.5 ) {
+  diffuseColor.rgb = vColor.rgb;
+  float shade = dot( normalize( vCubeNormal ), vec3( 0.2, 0.45, 0.87 ) );
+  diffuseColor.rgb *= 0.86 + 0.14 * clamp( shade, 0.0, 1.0 );
+}
 diffuseColor.a *= vInstanceOpacity;
 #include <opaque_fragment>`,
       );
   };
 
-  material.customProgramCacheKey = () => "cubism-cube-v2";
+  material.customProgramCacheKey = () => "cubism-cube-v3";
   return material;
 }
 
@@ -102,7 +121,7 @@ function setMediaOpacity(runtime: ItemRuntime, opacity: number) {
 }
 
 export function CubismMesh({ runtime }: { runtime: ItemRuntime }) {
-  if (runtime.samples.length === 0 || runtime.width <= 0 || runtime.height <= 0) return null;
+  if (runtime.samples.length === 0 || !runtime.image || runtime.width <= 0 || runtime.height <= 0) return null;
   return <ActiveMesh runtime={runtime} />;
 }
 
@@ -131,33 +150,54 @@ function ActiveMesh({ runtime }: { runtime: ItemRuntime }) {
 
   const mesh = useMemo(() => {
     const { cellW, cellH, depth } = gridMetrics(runtime.width, runtime.height, runtime.columns);
-    const geometry = new THREE.BoxGeometry(cellW * CELL_INSET, cellH * CELL_INSET, depth);
+    const geometry = new THREE.BoxGeometry(cellW, cellH, depth);
     const opacity = new THREE.InstancedBufferAttribute(new Float32Array(samples.length), 1);
+    const uvOffset = new THREE.InstancedBufferAttribute(new Float32Array(samples.length * 2), 2);
+    const uvScale = new THREE.InstancedBufferAttribute(new Float32Array(samples.length * 2), 2);
     opacity.setUsage(THREE.DynamicDrawUsage);
     geometry.setAttribute("instanceOpacity", opacity);
+    geometry.setAttribute("instanceUvOffset", uvOffset);
+    geometry.setAttribute("instanceUvScale", uvScale);
 
-    const instanced = new THREE.InstancedMesh(geometry, createCubeMaterial(), samples.length);
+    const image = runtime.image ?? document.createElement("canvas");
+    const texture = new THREE.CanvasTexture(image);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.magFilter = THREE.NearestFilter;
+    texture.minFilter = THREE.NearestFilter;
+    texture.generateMipmaps = false;
+
+    const instanced = new THREE.InstancedMesh(geometry, createCubeMaterial(texture), samples.length);
     instanced.frustumCulled = false;
     instanced.visible = false;
     instanced.matrixAutoUpdate = true;
 
+    const uSpan = cellW / runtime.width;
+    const vSpan = cellH / runtime.height;
     const color = new THREE.Color();
     for (let index = 0; index < samples.length; index++) {
-      const [red, green, blue] = samples[index].color;
+      const sample = samples[index];
+      const [red, green, blue] = sample.color;
       color.setRGB(red, green, blue, THREE.SRGBColorSpace);
       instanced.setColorAt(index, color);
       opacity.setX(index, 0);
+      uvOffset.setXY(index, sample.u - uSpan * 0.5, 1 - sample.v - vSpan * 0.5);
+      uvScale.setXY(index, uSpan, vSpan);
     }
     if (instanced.instanceColor) instanced.instanceColor.needsUpdate = true;
     opacity.needsUpdate = true;
+    uvOffset.needsUpdate = true;
+    uvScale.needsUpdate = true;
     return instanced;
-  }, [runtime.width, runtime.height, runtime.columns, samples]);
+  }, [runtime, samples]);
 
   useEffect(() => {
     return () => {
       mesh.geometry.dispose();
       const material = mesh.material;
-      if (!Array.isArray(material)) material.dispose();
+      if (!Array.isArray(material)) {
+        material.map?.dispose();
+        material.dispose();
+      }
     };
   }, [mesh]);
 
@@ -222,7 +262,7 @@ function ActiveMesh({ runtime }: { runtime: ItemRuntime }) {
           metrics.depth * 0.5 + travel * fly * seed.flyScale,
         );
         dummy.rotation.set(seed.spinX * t, seed.spinY * t, seed.spinZ * t);
-        dummy.scale.set(1, 1, 1);
+        dummy.scale.set(gapScale(metrics.cellW), gapScale(metrics.cellH), 1);
         dummy.updateMatrix();
         mesh.setMatrixAt(index, dummy.matrix);
         opacity.setX(index, fade);
@@ -235,15 +275,15 @@ function ActiveMesh({ runtime }: { runtime: ItemRuntime }) {
 
     const direction = runtime.phase === "hover" ? 1 : -1;
     runtime.progress = Math.min(1, Math.max(0, runtime.progress + (direction * step) / RIPPLE_SECONDS));
-    const imageOpacity = 1 - smoothstep((runtime.progress - 0.12) / 0.88);
-    setMediaOpacity(runtime, imageOpacity);
 
     if (runtime.progress <= 0) {
       mesh.visible = false;
       cubeMaterial.depthWrite = true;
+      setMediaOpacity(runtime, 1);
       return;
     }
 
+    setMediaOpacity(runtime, 0);
     mesh.visible = true;
     cubeMaterial.depthWrite = true;
 
@@ -253,12 +293,17 @@ function ActiveMesh({ runtime }: { runtime: ItemRuntime }) {
       const extrusion = extrusionAt(Math.min(1, distance / maxDistance), runtime.progress);
       const scaleZ = SLAB + (1 - SLAB) * extrusion;
       const wave = Math.sin(Math.PI * extrusion) * WAVE;
+      const open = 1 - extrusion;
       dummy.position.set(sample.x, sample.y, metrics.depth * scaleZ * 0.5 + wave);
       dummy.rotation.set(0, 0, 0);
-      dummy.scale.set(1, 1, scaleZ);
+      dummy.scale.set(
+        gapScale(metrics.cellW) + (1 - gapScale(metrics.cellW)) * open,
+        gapScale(metrics.cellH) + (1 - gapScale(metrics.cellH)) * open,
+        scaleZ,
+      );
       dummy.updateMatrix();
       mesh.setMatrixAt(index, dummy.matrix);
-      opacity.setX(index, smoothstep(Math.min(1, extrusion / 0.32)));
+      opacity.setX(index, 1);
     }
 
     mesh.instanceMatrix.needsUpdate = true;

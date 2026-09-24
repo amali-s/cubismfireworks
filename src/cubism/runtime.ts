@@ -12,6 +12,7 @@ export type ItemRuntime = {
   revision: number;
   button: HTMLButtonElement | null;
   samples: CubeSample[];
+  image: HTMLCanvasElement | null;
   width: number;
   height: number;
   columns: number;
@@ -38,6 +39,7 @@ export function createRuntime(): ItemRuntime {
     revision: 0,
     button: null,
     samples: [],
+    image: null,
     width: 0,
     height: 0,
     columns: 28,
