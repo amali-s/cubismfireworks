@@ -17,19 +17,68 @@ body {
 }
 
 main {
-  padding: 2.5rem 1.5rem;
+  min-height: 100vh;
+  box-sizing: border-box;
+  padding: 2.5rem 1.5rem 4rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+h1 {
+  margin: 0 0 2rem;
+  font-size: 1.35rem;
+  font-weight: normal;
+  letter-spacing: 0.14em;
+}
+
+.menu {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 1.75rem 2rem;
+  width: min(100%, 980px);
 }
 
 .menu-item {
-  position: fixed;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: none;
-  z-index: 1;
+  opacity: 1;
+  transition: opacity 480ms ease;
 }
 
-.menu-item button {
-  pointer-events: auto;
+.menu-item.is-dimmed {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.subpage {
+  width: min(100%, 34rem);
+  margin-top: 2.75rem;
+}
+
+.subpage h2 {
+  margin: 0 0 0.75rem;
+  font-size: 2rem;
+  font-weight: normal;
+}
+
+.subpage p {
+  margin: 0 0 0.65rem;
+  line-height: 1.45;
+}
+
+.subpage button {
+  margin-top: 1.1rem;
+  padding: 0.45rem 1.1rem;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .menu-item {
+    transition: none;
+  }
 }
