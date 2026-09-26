@@ -1,12 +1,14 @@
 import { useMemo, useState } from "react";
 import { CubismItem, CubismReveal, CubismStage } from "../cubism/index.ts";
 import { createMenuArt, TILE_HEIGHT, TILE_WIDTH, type MenuArtId } from "./art.ts";
+import { FieldPage } from "./FieldPage.tsx";
 import { ArchivePage, GalleryPage, StudioPage } from "./subpages.tsx";
 
 const initialGeneration: Record<MenuArtId, number> = {
   gallery: 0,
   archive: 0,
   studio: 0,
+  field: 0,
 };
 
 export default function App() {
@@ -28,6 +30,8 @@ export default function App() {
       <ArchivePage onBack={close} />
     ) : active === "studio" ? (
       <StudioPage onBack={close} />
+    ) : active === "field" ? (
+      <FieldPage onBack={close} />
     ) : null;
 
   return (

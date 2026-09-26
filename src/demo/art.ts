@@ -1,7 +1,7 @@
 export const TILE_WIDTH = 280;
 export const TILE_HEIGHT = 360;
 
-export type MenuArtId = "gallery" | "archive" | "studio";
+export type MenuArtId = "gallery" | "archive" | "studio" | "field";
 
 export type MenuArt = {
   id: MenuArtId;
@@ -146,10 +146,44 @@ function paintStudio(context: CanvasRenderingContext2D) {
   ]);
 }
 
+function paintField(context: CanvasRenderingContext2D) {
+  plane(context, "#5c6142", [
+    [108, 236],
+    [174, 222],
+    [166, 328],
+    [98, 336],
+  ]);
+  plane(context, "#6a704c", [
+    [100, 142],
+    [198, 124],
+    [184, 252],
+    [88, 268],
+  ]);
+  plane(context, "#6d7c8b", [
+    [58, 160],
+    [118, 146],
+    [106, 242],
+    [48, 252],
+  ]);
+  plane(context, "#7a8794", [
+    [128, 68],
+    [190, 52],
+    [202, 122],
+    [124, 136],
+  ]);
+  plane(context, "#7c463e", [
+    [140, 112],
+    [186, 100],
+    [176, 156],
+    [132, 164],
+  ]);
+}
+
 export function createMenuArt(): MenuArt[] {
   return [
     { id: "gallery", canvas: createTile(paintGallery) },
     { id: "archive", canvas: createTile(paintArchive) },
     { id: "studio", canvas: createTile(paintStudio) },
+    { id: "field", canvas: createTile(paintField) },
   ];
 }
