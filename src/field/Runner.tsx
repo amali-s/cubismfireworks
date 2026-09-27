@@ -1,7 +1,7 @@
-import { useLayoutEffect, useMemo, useRef } from "react";
-import { useFrame } from "@react-three/fiber";
+import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { useFrame, type ThreeEvent } from "@react-three/fiber";
 import * as THREE from "three";
-import { easeOutCubic, smoothstep } from "../cubism/easing.ts";
+import { easeInCubic, easeOutCubic, smoothstep } from "../cubism/easing.ts";
 import {
   FIGURE,
   FIGURE_HEIGHT,
@@ -26,6 +26,11 @@ const QUIET_BOB = 0.018;
 const CHARGE_RAMP = 0.42;
 const SETTLE_TIME = 0.9;
 const MAX_STEP = 0.05;
+const REST_OPACITY = 0.82;
+const SHATTER_FADE_START = 0.7;
+const BURST_SECONDS = 1.1;
+const REDUCED_FADE_SECONDS = 0.34;
+const GRAVITY = 3.2;
 
 const UP = new THREE.Vector3(0, 1, 0);
 const SWING_AXIS = new THREE.Vector3(1, 0, 0);
@@ -62,6 +67,27 @@ type Motion = {
   dummy: THREE.Object3D;
 };
 
+type Shard = {
+  origin: THREE.Vector3;
+  quaternion: THREE.Quaternion;
+  push: number;
+  spinX: number;
+  spinY: number;
+  spinZ: number;
+  fallback: THREE.Vector3;
+};
+
+type BurstPhase = "idle" | "fly" | "gone";
+
+type BurstState = {
+  phase: BurstPhase;
+  elapsed: number;
+  duration: number;
+  reduced: boolean;
+  hit: THREE.Vector3;
+  dir: THREE.Vector3;
+};
+
 type RunnerProps = {
   geometry: THREE.BufferGeometry;
   material: THREE.Material;
@@ -72,6 +98,11 @@ type RunnerProps = {
   stop: readonly [number, number, number];
   reducedMotion: boolean;
 };
+
+function shatterOpacity(progress: number) {
+  if (progress <= SHATTER_FADE_START) return 1;
+  return 1 - (progress - SHATTER_FADE_START) / (1 - SHATTER_FADE_START);
+}
 
 function hash01(n: number) {
   const value = Math.sin(n * 127.1 + 311.7) * 43758.5453;
@@ -237,6 +268,81 @@ function writeInstances(mesh: THREE.InstancedMesh, cubes: Cube[], motion: Motion
     mesh.setMatrixAt(i, dummy.matrix);
   }
   mesh.instanceMatrix.needsUpdate = true;
+  mesh.boundingSphere = null;
+}
+
+function buildShards(count: number, seed: number): Shard[] {
+  const shards: Shard[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const angle = hash01(index + 19 + seed * 3.1) * TAU;
+    const lift = (hash01(index + 29 + seed * 5.3) - 0.5) * 2;
+    shards.push({
+      origin: new THREE.Vector3(),
+      quaternion: new THREE.Quaternion(),
+      push: 0.85 + hash01(index + 7 + seed * 13.1) * 1.9,
+      spinX: (hash01(index + 1 + seed) - 0.5) * 8.4,
+      spinY: (hash01(index + 2 + seed) - 0.5) * 8.4,
+      spinZ: (hash01(index + 3 + seed) - 0.5) * 6.2,
+      fallback: new THREE.Vector3(Math.cos(angle), lift, Math.sin(angle)).normalize(),
+    });
+  }
+  return shards;
+}
+
+function snapshotPose(cubes: Cube[], shards: Shard[], motion: Motion) {
+  const { amp } = swingAngles(motion);
+  const dummy = motion.dummy;
+  for (let i = 0; i < cubes.length; i += 1) {
+    const swing = poseCube(cubes[i], motion, amp, 0);
+    dummy.position.copy(motion.posed);
+    dummy.rotation.set(0, motion.yaw, 0);
+    dummy.rotateX(-swing);
+    shards[i].origin.copy(dummy.position);
+    shards[i].quaternion.copy(dummy.quaternion);
+  }
+}
+
+function writeBurst(
+  mesh: THREE.InstancedMesh,
+  material: THREE.Material,
+  shards: Shard[],
+  burst: BurstState,
+  dummy: THREE.Object3D,
+) {
+  const duration = burst.duration;
+  const t = duration <= 0 ? 1 : burst.elapsed / duration;
+  const fade = burst.reduced ? 1 - t : shatterOpacity(t);
+  material.opacity = REST_OPACITY * fade;
+  material.depthWrite = fade > 0.95;
+  if (t >= 1) {
+    mesh.visible = false;
+    burst.phase = "gone";
+    return;
+  }
+
+  const travel = burst.reduced ? 0 : easeInCubic(t);
+  const fall = burst.reduced ? 0 : 0.5 * GRAVITY * burst.elapsed * burst.elapsed;
+  const dir = burst.dir;
+  for (let i = 0; i < shards.length; i += 1) {
+    const shard = shards[i];
+    dummy.position.copy(shard.origin);
+    dummy.quaternion.copy(shard.quaternion);
+    if (!burst.reduced) {
+      dir.copy(shard.origin).sub(burst.hit);
+      if (dir.lengthSq() < 1e-6) dir.copy(shard.fallback);
+      else dir.normalize();
+      dummy.position.addScaledVector(dir, shard.push * travel);
+      dummy.position.y -= fall;
+      dummy.rotateX(shard.spinX * t);
+      dummy.rotateY(shard.spinY * t);
+      dummy.rotateZ(shard.spinZ * t);
+    }
+    dummy.scale.set(1, 1, 1);
+    dummy.updateMatrix();
+    mesh.setMatrixAt(i, dummy.matrix);
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+  mesh.boundingSphere = null;
 }
 
 export function Runner({
@@ -253,6 +359,22 @@ export function Runner({
   const reducedRef = useRef(reducedMotion);
   reducedRef.current = reducedMotion;
   const cubes = useMemo(() => buildCubes(color, seed), [color, seed]);
+  const shards = useMemo(() => buildShards(cubes.length, seed), [cubes.length, seed]);
+  const bodyMaterial = useMemo(() => {
+    const next = material.clone();
+    next.transparent = true;
+    next.opacity = REST_OPACITY;
+    next.depthWrite = true;
+    return next;
+  }, [material]);
+  const burst = useRef<BurstState>({
+    phase: "idle",
+    elapsed: 0,
+    duration: BURST_SECONDS,
+    reduced: false,
+    hit: new THREE.Vector3(),
+    dir: new THREE.Vector3(),
+  });
   const motion = useMemo<Motion>(() => {
     const atRest = reducedMotion;
     const position = new THREE.Vector3(...(atRest ? stop : spawn));
@@ -278,6 +400,8 @@ export function Runner({
     };
   }, [inward, reducedMotion, seed, spawn, stop]);
 
+  useEffect(() => () => bodyMaterial.dispose(), [bodyMaterial]);
+
   useLayoutEffect(() => {
     const mesh = meshRef.current;
     if (!mesh) return;
@@ -289,17 +413,40 @@ export function Runner({
   useFrame((state, dt) => {
     const mesh = meshRef.current;
     if (!mesh) return;
+    const stateBurst = burst.current;
+    if (stateBurst.phase === "gone") return;
+    if (stateBurst.phase === "fly") {
+      stateBurst.elapsed = Math.min(stateBurst.duration, stateBurst.elapsed + Math.min(dt, MAX_STEP));
+      writeBurst(mesh, bodyMaterial, shards, stateBurst, motion.dummy);
+      return;
+    }
     stepMotion(motion, state.camera, Math.min(dt, MAX_STEP), reducedRef.current);
     writeInstances(mesh, cubes, motion);
   });
 
+  const onClick = (event: ThreeEvent<MouseEvent>) => {
+    event.stopPropagation();
+    const mesh = meshRef.current;
+    const stateBurst = burst.current;
+    if (!mesh || stateBurst.phase !== "idle") return;
+    const reduced = reducedRef.current;
+    snapshotPose(cubes, shards, motion);
+    stateBurst.hit.copy(event.point);
+    stateBurst.elapsed = 0;
+    stateBurst.reduced = reduced;
+    stateBurst.duration = reduced ? REDUCED_FADE_SECONDS : BURST_SECONDS;
+    stateBurst.phase = "fly";
+    writeBurst(mesh, bodyMaterial, shards, stateBurst, motion.dummy);
+  };
+
   return (
     <instancedMesh
       ref={meshRef}
-      args={[geometry, material, FIGURE.length]}
+      args={[geometry, bodyMaterial, FIGURE.length]}
       frustumCulled={false}
       renderOrder={2}
       dispose={null}
+      onClick={onClick}
     />
   );
 }
