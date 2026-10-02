@@ -3,13 +3,14 @@ import { useFrame, type ThreeEvent } from "@react-three/fiber";
 import * as THREE from "three";
 import { easeInCubic, easeOutCubic, smoothstep } from "../cubism/easing.ts";
 import {
-  FIGURE,
   FIGURE_HEIGHT,
   LIGHTNESS_JITTER,
   cellCenter,
+  figureCells,
   isLowerHalf,
   limbPose,
   type FigureCell,
+  type WeaponName,
 } from "./figure.ts";
 
 const TAU = Math.PI * 2;
@@ -97,6 +98,7 @@ type RunnerProps = {
   inward: readonly [number, number, number];
   stop: readonly [number, number, number];
   reducedMotion: boolean;
+  weapon?: WeaponName;
 };
 
 function shatterOpacity(progress: number) {
@@ -114,18 +116,18 @@ function bobWeight(cell: FigureCell) {
     const fromCore = Math.abs(cell.x) + Math.abs(cell.y - 8);
     return fromCore === 0 ? 0.015 : 0.04 + fromCore * 0.015;
   }
-  if (cell.part === "head") return 0.1;
-  if (cell.part === "armL" || cell.part === "armR") {
+  if (cell.part === "head" || cell.part === "neck") return 0.1;
+  if (cell.part === "armL" || cell.part === "armR" || cell.part === "weapon") {
     return 0.06 + 0.94 * ((10 - cell.y) / 4);
   }
   return 0.06 + 0.94 * ((5 - cell.y) / 5);
 }
 
-function buildCubes(color: string, seed: number): Cube[] {
+function buildCubes(color: string, seed: number, weapon: WeaponName): Cube[] {
   const base = new THREE.Color(color);
   const hsl = { h: 0, s: 0, l: 0 };
   base.getHSL(hsl, THREE.SRGBColorSpace);
-  return FIGURE.map((cell, index) => {
+  return figureCells(weapon).map((cell, index) => {
     const pose = limbPose(cell.part);
     const jitter = (hash01(index + seed * 13.1) - 0.5) * 2 * LIGHTNESS_JITTER;
     return {
@@ -354,11 +356,12 @@ export function Runner({
   inward,
   stop,
   reducedMotion,
+  weapon = "sword",
 }: RunnerProps) {
   const meshRef = useRef<THREE.InstancedMesh>(null);
   const reducedRef = useRef(reducedMotion);
   reducedRef.current = reducedMotion;
-  const cubes = useMemo(() => buildCubes(color, seed), [color, seed]);
+  const cubes = useMemo(() => buildCubes(color, seed, weapon), [color, seed, weapon]);
   const shards = useMemo(() => buildShards(cubes.length, seed), [cubes.length, seed]);
   const bodyMaterial = useMemo(() => {
     const next = material.clone();
@@ -442,7 +445,7 @@ export function Runner({
   return (
     <instancedMesh
       ref={meshRef}
-      args={[geometry, bodyMaterial, FIGURE.length]}
+      args={[geometry, bodyMaterial, cubes.length]}
       frustumCulled={false}
       renderOrder={2}
       dispose={null}
