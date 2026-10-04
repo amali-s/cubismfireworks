@@ -32,11 +32,18 @@ const SHATTER_FADE_START = 0.7;
 const BURST_SECONDS = 1.1;
 const REDUCED_FADE_SECONDS = 0.34;
 const GRAVITY = 0.25;
+const HOLD_DISTANCE = 8;
+const FAR_HOLD = 14.5;
+const RECYCLE_DELAY = 0.85;
+const QUIET_AMP = 0.16;
+const QUIET_HZ = 0.8;
+const QUIET_GAIT_BOB = 0.022;
 
 const UP = new THREE.Vector3(0, 1, 0);
 const SWING_AXIS = new THREE.Vector3(1, 0, 0);
 
-type Mode = "approach" | "charge" | "settled";
+type Mode = "approach" | "hold" | "commit" | "settled" | "recycle";
+export type RunnerKind = "charge" | "cross";
 
 type Cube = {
   rest: THREE.Vector3;
@@ -51,9 +58,14 @@ type Cube = {
 
 type Motion = {
   mode: Mode;
+  kind: RunnerKind;
+  routeIndex: number;
+  wait: number;
+  recycle: number;
   position: THREE.Vector3;
   inward: THREE.Vector3;
   stop: THREE.Vector3;
+  exit: THREE.Vector3;
   chargeDir: THREE.Vector3;
   yaw: number;
   phase: number;
@@ -66,6 +78,13 @@ type Motion = {
   frustum: THREE.Frustum;
   proj: THREE.Matrix4;
   dummy: THREE.Object3D;
+};
+
+export type RunnerRoute = {
+  spawn: readonly [number, number, number];
+  inward: readonly [number, number, number];
+  stop: readonly [number, number, number];
+  exit?: readonly [number, number, number];
 };
 
 type Shard = {
@@ -94,9 +113,9 @@ type RunnerProps = {
   material: THREE.Material;
   color: string;
   seed: number;
-  spawn: readonly [number, number, number];
-  inward: readonly [number, number, number];
-  stop: readonly [number, number, number];
+  kind: RunnerKind;
+  routes: readonly [RunnerRoute, RunnerRoute];
+  startDelay: number;
   reducedMotion: boolean;
   weapon?: WeaponName;
 };
@@ -166,7 +185,59 @@ function faceYaw(direction: THREE.Vector3) {
   return Math.atan2(direction.x, direction.z);
 }
 
+function placeOnRoute(motion: Motion, route: RunnerRoute, index: number, reduced: boolean) {
+  motion.routeIndex = index;
+  motion.inward.set(route.inward[0], route.inward[1], route.inward[2]);
+  if (motion.inward.lengthSq() > 0) motion.inward.normalize();
+  motion.stop.set(route.stop[0], route.stop[1], route.stop[2]);
+  const exit = route.exit ?? route.stop;
+  motion.exit.set(exit[0], exit[1], exit[2]);
+  motion.gait = 0;
+  motion.recycle = 0;
+  motion.wait = 0;
+  if (reduced) {
+    motion.mode = "settled";
+    motion.position.copy(motion.stop);
+    motion.settle = 1;
+    motion.chargeDir.set(-motion.position.x, 0, -motion.position.z);
+    motion.yaw = Math.atan2(-motion.position.x, -motion.position.z);
+    return;
+  }
+  motion.mode = "approach";
+  motion.position.set(route.spawn[0], route.spawn[1], route.spawn[2]);
+  motion.settle = 0;
+  motion.chargeDir.copy(motion.inward);
+  motion.yaw = Math.atan2(motion.inward.x, motion.inward.z);
+}
+
+function beginCommit(motion: Motion) {
+  const target = motion.kind === "cross" ? motion.exit : motion.stop;
+  motion.chargeDir.set(target.x - motion.position.x, 0, target.z - motion.position.z);
+  if (motion.chargeDir.lengthSq() < 1e-6) {
+    motion.position.set(target.x, motion.position.y, target.z);
+    if (motion.kind === "cross") {
+      motion.mode = "recycle";
+      motion.recycle = 0;
+      motion.gait = 0;
+    } else {
+      motion.mode = "settled";
+    }
+    return;
+  }
+  motion.chargeDir.normalize();
+  motion.mode = "commit";
+}
+
+function beginRecycle(motion: Motion, mesh: THREE.Object3D) {
+  motion.mode = "recycle";
+  motion.recycle = 0;
+  motion.gait = 0;
+  mesh.visible = false;
+}
+
 function stepMotion(motion: Motion, camera: THREE.Camera, dt: number, reduced: boolean) {
+  if (motion.mode === "recycle") return true;
+
   if (reduced) {
     motion.mode = "settled";
     motion.position.copy(motion.stop);
@@ -174,36 +245,63 @@ function stepMotion(motion: Motion, camera: THREE.Camera, dt: number, reduced: b
     motion.settle = 1;
     motion.yaw = dampAngle(motion.yaw, faceYaw(motion.chargeDir.set(-motion.position.x, 0, -motion.position.z)), 8, dt);
     motion.bobTime += dt * 0.85;
-    return;
+    return false;
+  }
+
+  if (motion.mode === "approach" && motion.wait > 0) {
+    motion.wait = Math.max(0, motion.wait - dt);
+    motion.gait = 0;
+    motion.settle = 0;
+    motion.bobTime += dt * 0.85;
+    return false;
   }
 
   if (motion.mode === "approach") {
-    motion.position.addScaledVector(motion.inward, WALK_SPEED * dt);
-    motion.phase += WALK_HZ * TAU * dt;
-    motion.yaw = dampAngle(motion.yaw, faceYaw(motion.inward), 8, dt);
-    motion.gait = 0;
-    motion.settle = 0;
     if (inView(motion, camera)) {
-      motion.chargeDir.set(motion.stop.x - motion.position.x, 0, motion.stop.z - motion.position.z);
-      if (motion.chargeDir.lengthSq() < 1e-6) {
-        motion.position.copy(motion.stop);
-        motion.mode = "settled";
+      beginCommit(motion);
+    } else {
+      const dist = camera.position.distanceTo(motion.position);
+      if (dist <= HOLD_DISTANCE) {
+        motion.mode = "hold";
       } else {
-        motion.chargeDir.normalize();
-        motion.mode = "charge";
+        motion.position.addScaledVector(motion.inward, WALK_SPEED * dt);
+        const nextDist = camera.position.distanceTo(motion.position);
+        if (inView(motion, camera)) {
+          beginCommit(motion);
+        } else if (nextDist <= HOLD_DISTANCE || nextDist >= FAR_HOLD) {
+          motion.mode = "hold";
+        } else {
+          motion.phase += WALK_HZ * TAU * dt;
+          motion.yaw = dampAngle(motion.yaw, faceYaw(motion.inward), 8, dt);
+          motion.gait = 0;
+          motion.settle = 0;
+        }
       }
     }
-  } else if (motion.mode === "charge") {
+  } else if (motion.mode === "hold") {
+    motion.phase += QUIET_HZ * TAU * dt;
+    motion.yaw = dampAngle(motion.yaw, faceYaw(motion.inward), 6, dt);
+    motion.gait = 0;
+    motion.settle = 0;
+    if (inView(motion, camera)) beginCommit(motion);
+  } else if (motion.mode === "commit") {
     motion.gait = Math.min(1, motion.gait + dt / CHARGE_RAMP);
     const pace = smoothstep(motion.gait);
     const speed = WALK_SPEED + (RUN_SPEED - WALK_SPEED) * pace;
     motion.phase += (WALK_HZ + (RUN_HZ - WALK_HZ) * pace) * TAU * dt;
     motion.yaw = dampAngle(motion.yaw, faceYaw(motion.chargeDir), 8, dt);
-    const remain = Math.hypot(motion.stop.x - motion.position.x, motion.stop.z - motion.position.z);
+    const target = motion.kind === "cross" ? motion.exit : motion.stop;
+    const remain = Math.hypot(target.x - motion.position.x, target.z - motion.position.z);
     const step = speed * dt;
     if (remain <= step) {
-      motion.position.copy(motion.stop);
-      motion.mode = "settled";
+      motion.position.set(target.x, motion.position.y, target.z);
+      if (motion.kind === "cross") {
+        motion.mode = "recycle";
+        motion.recycle = 0;
+        motion.gait = 0;
+      } else {
+        motion.mode = "settled";
+      }
     } else {
       motion.position.addScaledVector(motion.chargeDir, step);
     }
@@ -219,12 +317,16 @@ function stepMotion(motion: Motion, camera: THREE.Camera, dt: number, reduced: b
     );
   }
 
-  const pace = motion.mode === "approach" ? 0 : smoothstep(motion.gait);
-  motion.bobTime += dt * (0.9 + pace * 0.7);
+  if (motion.mode === "recycle") return true;
+  const pace = motion.mode === "approach" || motion.mode === "hold" ? 0 : smoothstep(motion.gait);
+  const bobRate = motion.mode === "hold" ? 0.65 : 0.9 + pace * 0.7;
+  motion.bobTime += dt * bobRate;
+  return false;
 }
 
 function swingAngles(motion: Motion) {
-  const pace = motion.mode === "approach" ? 0 : smoothstep(motion.gait);
+  if (motion.mode === "hold") return { amp: QUIET_AMP, bobAmp: QUIET_GAIT_BOB };
+  const pace = motion.mode === "approach" || motion.mode === "recycle" ? 0 : smoothstep(motion.gait);
   const settled = motion.mode === "settled" ? easeOutCubic(motion.settle) : 0;
   const amp = (WALK_AMP + (RUN_AMP - WALK_AMP) * pace) * (1 - settled);
   const bobAmp = (WALK_BOB + (RUN_BOB - WALK_BOB) * pace) * (1 - settled) + QUIET_BOB * settled;
@@ -319,7 +421,7 @@ function writeBurst(
   if (t >= 1) {
     mesh.visible = false;
     burst.phase = "gone";
-    return;
+    return true;
   }
 
   const travel = burst.reduced ? 0 : easeInCubic(t);
@@ -345,6 +447,7 @@ function writeBurst(
   }
   mesh.instanceMatrix.needsUpdate = true;
   mesh.boundingSphere = null;
+  return false;
 }
 
 export function Runner({
@@ -352,15 +455,17 @@ export function Runner({
   material,
   color,
   seed,
-  spawn,
-  inward,
-  stop,
+  kind,
+  routes,
+  startDelay,
   reducedMotion,
   weapon = "sword",
 }: RunnerProps) {
   const meshRef = useRef<THREE.InstancedMesh>(null);
   const reducedRef = useRef(reducedMotion);
   reducedRef.current = reducedMotion;
+  const routesRef = useRef(routes);
+  routesRef.current = routes;
   const cubes = useMemo(() => buildCubes(color, seed, weapon), [color, seed, weapon]);
   const shards = useMemo(() => buildShards(cubes.length, seed), [cubes.length, seed]);
   const bodyMaterial = useMemo(() => {
@@ -379,21 +484,22 @@ export function Runner({
     dir: new THREE.Vector3(),
   });
   const motion = useMemo<Motion>(() => {
-    const atRest = reducedMotion;
-    const position = new THREE.Vector3(...(atRest ? stop : spawn));
-    const inwardDir = new THREE.Vector3(...inward);
-    if (inwardDir.lengthSq() > 0) inwardDir.normalize();
-    return {
-      mode: atRest ? "settled" : "approach",
-      position,
-      inward: inwardDir,
-      stop: new THREE.Vector3(...stop),
-      chargeDir: new THREE.Vector3(-position.x, 0, -position.z),
-      yaw: atRest ? Math.atan2(-position.x, -position.z) : Math.atan2(inwardDir.x, inwardDir.z),
+    const created: Motion = {
+      mode: "approach",
+      kind,
+      routeIndex: 0,
+      wait: 0,
+      recycle: 0,
+      position: new THREE.Vector3(),
+      inward: new THREE.Vector3(),
+      stop: new THREE.Vector3(),
+      exit: new THREE.Vector3(),
+      chargeDir: new THREE.Vector3(),
+      yaw: 0,
       phase: seed,
       bobTime: seed,
       gait: 0,
-      settle: atRest ? 1 : 0,
+      settle: 0,
       posed: new THREE.Vector3(),
       jointRel: new THREE.Vector3(),
       box: new THREE.Box3(),
@@ -401,7 +507,10 @@ export function Runner({
       proj: new THREE.Matrix4(),
       dummy: new THREE.Object3D(),
     };
-  }, [inward, reducedMotion, seed, spawn, stop]);
+    placeOnRoute(created, routes[0], 0, reducedMotion);
+    if (!reducedMotion) created.wait = startDelay;
+    return created;
+  }, [kind, reducedMotion, routes, seed, startDelay]);
 
   useEffect(() => () => bodyMaterial.dispose(), [bodyMaterial]);
 
@@ -416,14 +525,30 @@ export function Runner({
   useFrame((state, dt) => {
     const mesh = meshRef.current;
     if (!mesh) return;
+    const capped = Math.min(dt, MAX_STEP);
     const stateBurst = burst.current;
-    if (stateBurst.phase === "gone") return;
     if (stateBurst.phase === "fly") {
-      stateBurst.elapsed = Math.min(stateBurst.duration, stateBurst.elapsed + Math.min(dt, MAX_STEP));
-      writeBurst(mesh, bodyMaterial, shards, stateBurst, motion.dummy);
+      stateBurst.elapsed = Math.min(stateBurst.duration, stateBurst.elapsed + capped);
+      if (writeBurst(mesh, bodyMaterial, shards, stateBurst, motion.dummy)) beginRecycle(motion, mesh);
       return;
     }
-    stepMotion(motion, state.camera, Math.min(dt, MAX_STEP), reducedRef.current);
+    if (motion.mode === "recycle") {
+      motion.recycle += capped;
+      if (motion.recycle < RECYCLE_DELAY) return;
+      const next = motion.routeIndex === 0 ? 1 : 0;
+      placeOnRoute(motion, routesRef.current[next], next, reducedRef.current);
+      stateBurst.phase = "idle";
+      stateBurst.elapsed = 0;
+      bodyMaterial.opacity = REST_OPACITY;
+      bodyMaterial.depthWrite = true;
+      writeInstances(mesh, cubes, motion);
+      mesh.visible = true;
+      return;
+    }
+    if (stepMotion(motion, state.camera, capped, reducedRef.current)) {
+      beginRecycle(motion, mesh);
+      return;
+    }
     writeInstances(mesh, cubes, motion);
   });
 
@@ -431,7 +556,7 @@ export function Runner({
     event.stopPropagation();
     const mesh = meshRef.current;
     const stateBurst = burst.current;
-    if (!mesh || stateBurst.phase !== "idle") return;
+    if (!mesh || stateBurst.phase !== "idle" || motion.mode === "recycle") return;
     const reduced = reducedRef.current;
     snapshotPose(cubes, shards, motion);
     stateBurst.hit.copy(event.point);

@@ -2,8 +2,8 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } fro
 import { Grid } from "@react-three/drei";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
-import { BODY_COLORS, CUBE_SIZE } from "./figure.ts";
-import { Runner } from "./Runner.tsx";
+import { BODY_COLORS, CUBE_SIZE, type WeaponName } from "./figure.ts";
+import { Runner, type RunnerKind, type RunnerRoute } from "./Runner.tsx";
 
 const EYE = 1.55;
 const FOG = "#111111";
@@ -12,30 +12,102 @@ const WALL_Z = -10.2;
 const WALL_WIDTH = 42;
 const WALL_HEIGHT = 14;
 
-const RUNNERS = [
+function line(
+  spawn: readonly [number, number, number],
+  aim: readonly [number, number, number],
+  stop: readonly [number, number, number],
+  exit?: readonly [number, number, number],
+): RunnerRoute {
+  return {
+    spawn,
+    inward: [aim[0] - spawn[0], 0, aim[2] - spawn[2]],
+    stop,
+    exit,
+  };
+}
+
+type Hologram = {
+  name: string;
+  color: string;
+  seed: number;
+  weapon: WeaponName;
+  kind: RunnerKind;
+  delay: number;
+  routes: readonly [RunnerRoute, RunnerRoute];
+};
+
+const RUNNERS: readonly Hologram[] = [
   {
-    name: "left",
+    name: "blue-charge",
     color: BODY_COLORS[0],
     seed: 1.3,
-    spawn: [-10.6, 0, -6.4] as const,
-    inward: [1, 0, 0.34] as const,
-    stop: [-1.15, 0, -3.58] as const,
+    weapon: "sword",
+    kind: "charge",
+    delay: 2.4,
+    routes: [
+      line([-11.2, 0, -4.6], [1.2, 0, -8.8], [-2.2, 0, -3.55]),
+      line([10.7, 0, -5.6], [-1.8, 0, -8.6], [-1.15, 0, -4.65]),
+    ],
   },
   {
-    name: "deep",
+    name: "rose-charge",
     color: BODY_COLORS[1],
     seed: 4.8,
-    spawn: [0.08, 0, -18.6] as const,
-    inward: [-0.01, 0, 1] as const,
-    stop: [0.04, 0, -4.15] as const,
+    weapon: "axe",
+    kind: "charge",
+    delay: 0,
+    routes: [
+      line([10.4, 0, -6.5], [-0.4, 0, -9.4], [0, 0, -3.5]),
+      line([-11.6, 0, -3.9], [0.2, 0, -9.6], [1.15, 0, -4.65]),
+    ],
   },
   {
-    name: "right",
+    name: "olive-charge",
     color: BODY_COLORS[2],
     seed: 8.2,
-    spawn: [11.1, 0, -7.1] as const,
-    inward: [-1, 0, 0.3] as const,
-    stop: [1.2, 0, -3.5] as const,
+    weapon: "sword",
+    kind: "charge",
+    delay: 6.2,
+    routes: [
+      line([-10.5, 0, -6.2], [0.6, 0, -9.4], [2.2, 0, -3.55]),
+      line([11.2, 0, -4.8], [-1, 0, -8.8], [0, 0, -5.15]),
+    ],
+  },
+  {
+    name: "blue-cross",
+    color: BODY_COLORS[0],
+    seed: 2.7,
+    weapon: "axe",
+    kind: "cross",
+    delay: 6.3,
+    routes: [
+      line([11.5, 0, -4.1], [-0.2, 0, -9.6], [-2.55, 0, -4.5], [-10.8, 0, -6.4]),
+      line([-10.8, 0, -5.5], [1.8, 0, -8.6], [2.4, 0, -4.35], [11.6, 0, -4.2]),
+    ],
+  },
+  {
+    name: "rose-cross",
+    color: BODY_COLORS[1],
+    seed: 6.1,
+    weapon: "sword",
+    kind: "cross",
+    delay: 8.6,
+    routes: [
+      line([-11.35, 0, -4.15], [0.8, 0, -9.2], [2.6, 0, -3.8], [10.6, 0, -6.8]),
+      line([10.85, 0, -5.15], [-1.4, 0, -9], [-2.6, 0, -4], [-11.4, 0, -4.5]),
+    ],
+  },
+  {
+    name: "olive-cross",
+    color: BODY_COLORS[2],
+    seed: 11.4,
+    weapon: "axe",
+    kind: "cross",
+    delay: 1.4,
+    routes: [
+      line([10.95, 0, -6.2], [-1.5, 0, -8.8], [-0.8, 0, -5.45], [-11.2, 0, -5.6]),
+      line([-10.2, 0, -6.7], [1, 0, -9.3], [0.8, 0, -5.45], [10.4, 0, -6.6]),
+    ],
   },
 ];
 
@@ -200,9 +272,10 @@ function Scene({ reducedMotion }: { reducedMotion: boolean }) {
           material={material}
           color={runner.color}
           seed={runner.seed}
-          spawn={runner.spawn}
-          inward={runner.inward}
-          stop={runner.stop}
+          kind={runner.kind}
+          routes={runner.routes}
+          startDelay={runner.delay}
+          weapon={runner.weapon}
           reducedMotion={reducedMotion}
         />
       ))}
