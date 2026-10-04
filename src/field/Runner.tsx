@@ -27,11 +27,11 @@ const QUIET_BOB = 0.018;
 const CHARGE_RAMP = 0.42;
 const SETTLE_TIME = 0.9;
 const MAX_STEP = 0.05;
-const REST_OPACITY = 0.82;
+const REST_OPACITY = 0.36;
 const SHATTER_FADE_START = 0.7;
 const BURST_SECONDS = 1.1;
 const REDUCED_FADE_SECONDS = 0.34;
-const GRAVITY = 3.2;
+const GRAVITY = 0.25;
 
 const UP = new THREE.Vector3(0, 1, 0);
 const SWING_AXIS = new THREE.Vector3(1, 0, 0);
@@ -281,7 +281,7 @@ function buildShards(count: number, seed: number): Shard[] {
     shards.push({
       origin: new THREE.Vector3(),
       quaternion: new THREE.Quaternion(),
-      push: 0.85 + hash01(index + 7 + seed * 13.1) * 1.9,
+      push: 0.12 + hash01(index + 7 + seed * 13.1) * 0.23,
       spinX: (hash01(index + 1 + seed) - 0.5) * 8.4,
       spinY: (hash01(index + 2 + seed) - 0.5) * 8.4,
       spinZ: (hash01(index + 3 + seed) - 0.5) * 6.2,

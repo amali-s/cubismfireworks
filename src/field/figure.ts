@@ -17,8 +17,8 @@ export type FigureCell = {
   z: number;
 };
 
-/** Dust blue, dried red, olive. One hue per body, dark enough for a #111111 field. */
-export const BODY_COLORS = ["#697e96", "#965d54", "#707e58"] as const;
+/** Pale blue, pale rose, pale olive. One hue per body, light enough to read as tint on a #111111 field. */
+export const BODY_COLORS = ["#adc9e1", "#e4bab4", "#c6d3a6"] as const;
 
 /** Added to sRGB lightness so stacked faces of the same hue separate. */
 export const LIGHTNESS_JITTER = 0.08;
